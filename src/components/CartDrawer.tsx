@@ -98,13 +98,23 @@ export function CartDrawer() {
                   <QuantityStepper
                     quantity={line.qty}
                     itemName={line.name}
-                    onChange={(qty) =>
+                    onChange={(qty) => {
+                      if (qty === 0 && typeof pendo !== 'undefined') {
+                        pendo.track('item_removed_from_cart', {
+                          restaurantId: cart.restaurantId,
+                          restaurantName: restaurant?.name,
+                          itemId: line.itemId,
+                          itemName: line.name,
+                          itemPrice: line.price,
+                          quantityBeforeRemoval: line.qty,
+                        })
+                      }
                       dispatch({
                         type: 'cart/setQty',
                         itemId: line.itemId,
                         qty,
                       })
-                    }
+                    }}
                   />
                 </li>
               ))}

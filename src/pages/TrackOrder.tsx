@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { EmptyState } from '../components/EmptyState'
 import { Tile } from '../components/Tile'
@@ -13,6 +14,9 @@ import {
 import { useNow } from '../lib/useNow'
 import { useReorder } from '../lib/useReorder'
 
+/** Prevents re-firing the delivered event on page revisit. */
+const deliveredOrderIds = new Set<string>()
+
 export function TrackOrder() {
   const { orderId } = useParams()
   const order = useOrder(orderId)
@@ -24,6 +28,27 @@ export function TrackOrder() {
     ? Date.now() - order.placedAt >= STAGES[STAGES.length - 1].startsAt
     : false
   const now = useNow(1000, !isFinished)
+
+  const isDeliveredNow = order
+    ? stageIndexAt(order, now) === STAGES.length - 1
+    : false
+
+  useEffect(() => {
+    if (!order || !isDeliveredNow) return
+    if (deliveredOrderIds.has(order.id)) return
+    deliveredOrderIds.add(order.id)
+    if (typeof pendo !== 'undefined') {
+      pendo.track('order_delivered', {
+        orderId: order.id,
+        restaurantId: order.restaurantId,
+        restaurantName: order.restaurantName,
+        fulfillment: order.fulfillment,
+        total: order.totals.total,
+        etaMinutes: order.etaMinutes,
+        actualDurationMs: now - order.placedAt,
+      })
+    }
+  }, [isDeliveredNow, order, now])
 
   if (!order) {
     return (
