@@ -107,6 +107,18 @@ export function CartDrawer() {
                           itemName: line.name,
                           itemPrice: line.price,
                           quantityBeforeRemoval: line.qty,
+                          source: 'cart_drawer',
+                        })
+                      }
+                      if (qty > 0 && typeof pendo !== 'undefined') {
+                        pendo.track('cart_item_quantity_changed', {
+                          restaurantId: cart.restaurantId,
+                          itemId: line.itemId,
+                          itemName: line.name,
+                          itemPrice: line.price,
+                          previousQuantity: line.qty,
+                          newQuantity: qty,
+                          source: 'cart_drawer',
                         })
                       }
                       dispatch({

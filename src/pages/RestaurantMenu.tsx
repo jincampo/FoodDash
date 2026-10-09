@@ -10,6 +10,9 @@ import { gradientStyle } from '../lib/gradient'
 import { useCart, useStoreDispatch } from '../lib/store'
 import { useUI } from '../lib/ui'
 
+/** An add waiting on the "Start a new cart?" dialog, and where it came from. */
+type PendingAdd = { item: MenuItem; menuSectionId: string }
+
 export function RestaurantMenu() {
   const { restaurantId } = useParams()
   const restaurant = getRestaurant(restaurantId)
@@ -18,7 +21,7 @@ export function RestaurantMenu() {
   const { openCart, notify } = useUI()
 
   /** Set when adding would replace another restaurant's cart. */
-  const [conflictItem, setConflictItem] = useState<MenuItem | null>(null)
+  const [conflict, setConflict] = useState<PendingAdd | null>(null)
 
   const sections = useMemo<MenuSection[]>(() => {
     if (!restaurant) return []
@@ -57,7 +60,7 @@ export function RestaurantMenu() {
     cart.restaurantId !== null &&
     cart.restaurantId !== restaurant.id
 
-  const addItem = (item: MenuItem) => {
+  const addItem = (item: MenuItem, menuSectionId: string) => {
     dispatch({ type: 'cart/add', restaurantId: restaurant.id, item })
     if (typeof pendo !== 'undefined') {
       pendo.track('item_added_to_cart', {
@@ -70,20 +73,47 @@ export function RestaurantMenu() {
         isVegetarian: item.vegetarian ?? false,
         isSpicy: item.spicy ?? false,
         cuisine: restaurant.cuisine,
+        // Popular items are listed twice: in the 'popular' rail and their own
+        // section, so this shows which listing drove the add.
+        menuSectionId,
       })
     }
     notify(`${item.name} added`)
   }
 
-  const requestAdd = (item: MenuItem) => {
+  const requestAdd = (item: MenuItem, menuSectionId: string) => {
     if (cartIsElsewhere) {
-      setConflictItem(item)
+      setConflict({ item, menuSectionId })
       return
     }
-    addItem(item)
+    addItem(item, menuSectionId)
   }
 
   const changeQuantity = (item: MenuItem, quantity: number) => {
+    // Read before the dispatch, while the cart still has the old quantity.
+    const previousQuantity = cart.qtyOf(item.id)
+    if (quantity === 0 && typeof pendo !== 'undefined') {
+      pendo.track('item_removed_from_cart', {
+        restaurantId: restaurant.id,
+        restaurantName: restaurant.name,
+        itemId: item.id,
+        itemName: item.name,
+        itemPrice: item.price,
+        quantityBeforeRemoval: previousQuantity,
+        source: 'menu',
+      })
+    }
+    if (quantity > 0 && typeof pendo !== 'undefined') {
+      pendo.track('cart_item_quantity_changed', {
+        restaurantId: restaurant.id,
+        itemId: item.id,
+        itemName: item.name,
+        itemPrice: item.price,
+        previousQuantity,
+        newQuantity: quantity,
+        source: 'menu',
+      })
+    }
     dispatch({ type: 'cart/setQty', itemId: item.id, qty: quantity })
   }
 
@@ -141,7 +171,7 @@ export function RestaurantMenu() {
                 item={item}
                 restaurant={restaurant}
                 quantity={cartBelongsHere ? cart.qtyOf(item.id) : 0}
-                onAdd={requestAdd}
+                onAdd={(menuItem) => requestAdd(menuItem, section.id)}
                 onQuantityChange={changeQuantity}
               />
             ))}
@@ -161,10 +191,10 @@ export function RestaurantMenu() {
         </div>
       )}
 
-      {conflictItem && (
+      {conflict && (
         <ConfirmDialog
           title="Start a new cart?"
-          description={`Your cart has items from another restaurant. Adding ${conflictItem.name} will empty it.`}
+          description={`Your cart has items from another restaurant. Adding ${conflict.item.name} will empty it.`}
           confirmLabel="Start new cart"
           onConfirm={() => {
             if (typeof pendo !== 'undefined') {
@@ -172,14 +202,17 @@ export function RestaurantMenu() {
                 newRestaurantId: restaurant.id,
                 newRestaurantName: restaurant.name,
                 previousRestaurantId: cart.restaurantId,
-                newItemName: conflictItem.name,
-                newItemPrice: conflictItem.price,
+                newItemName: conflict.item.name,
+                newItemPrice: conflict.item.price,
+                // Still the old cart here: addItem below replaces it.
+                discardedItemCount: cart.itemCount,
+                discardedSubtotal: cart.subtotal,
               })
             }
-            addItem(conflictItem)
-            setConflictItem(null)
+            addItem(conflict.item, conflict.menuSectionId)
+            setConflict(null)
           }}
-          onCancel={() => setConflictItem(null)}
+          onCancel={() => setConflict(null)}
         />
       )}
     </div>

@@ -3,13 +3,14 @@ import { EmptyState } from '../components/EmptyState'
 import { Tile } from '../components/Tile'
 import { getRestaurant } from '../data/restaurants'
 import { dayAndTime, money } from '../lib/format'
-import { useOrders, useStoreDispatch } from '../lib/store'
-import { STAGES, stageIndexAt } from '../lib/tracking'
+import { useCart, useOrders, useStoreDispatch } from '../lib/store'
+import { STAGES, isDelivered, stageIndexAt } from '../lib/tracking'
 import { useNow } from '../lib/useNow'
 import { useReorder } from '../lib/useReorder'
 
 export function Orders() {
   const orders = useOrders()
+  const cart = useCart()
   const dispatch = useStoreDispatch()
   const reorder = useReorder()
   const now = useNow(2000, orders.length > 0)
@@ -39,7 +40,19 @@ export function Orders() {
         <button
           type="button"
           className="button button--ghost"
-          onClick={() => dispatch({ type: 'demo/reset' })}
+          onClick={() => {
+            // Sent before the reset so the counts describe what gets wiped.
+            if (typeof pendo !== 'undefined') {
+              pendo.track('demo_data_reset', {
+                ordersClearedCount: orders.length,
+                inProgressOrdersCount: orders.filter(
+                  (order) => !isDelivered(order, now),
+                ).length,
+                cartItemCount: cart.itemCount,
+              })
+            }
+            dispatch({ type: 'demo/reset' })
+          }}
         >
           Reset demo data
         </button>
@@ -84,7 +97,7 @@ export function Orders() {
                 <button
                   type="button"
                   className="button button--secondary"
-                  onClick={() => reorder(order)}
+                  onClick={() => reorder(order, 'order_history')}
                 >
                   Reorder
                 </button>

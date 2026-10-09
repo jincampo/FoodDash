@@ -161,8 +161,11 @@ export function Checkout() {
           serviceFee: order.totals.serviceFee,
           tip: order.totals.tip,
           total: order.totals.total,
-          tipPercent: Math.round(tipPercent * 100),
+          // Pickup has no tip, but the tip chips keep their last selection.
+          tipPercent:
+            order.fulfillment === 'pickup' ? 0 : Math.round(tipPercent * 100),
           etaMinutes: order.etaMinutes,
+          cuisine: restaurant.cuisine,
         })
       }
       dispatch({ type: 'order/place', order })

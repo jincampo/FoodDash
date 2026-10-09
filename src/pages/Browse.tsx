@@ -1,10 +1,19 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { cuisines, restaurants } from '../data/restaurants'
 import type { Restaurant } from '../data/restaurants'
 import { RestaurantCard } from '../components/RestaurantCard'
 import { EmptyState } from '../components/EmptyState'
 
 type SortKey = 'recommended' | 'fastest' | 'cheapest'
+
+/** How a search was run, for `restaurant_search_executed`. */
+type SearchTrigger = 'typing' | 'button' | 'enter'
+
+/** The control that changed the list, for `restaurant_filters_applied`. */
+type FilterChange = 'cuisine' | 'free_delivery' | 'sort' | 'clear_filters'
+
+/** Results filter as you type, so a pause this long counts as a search. */
+const SEARCH_PAUSE_MS = 1000
 
 const SORTS: { key: SortKey; label: string }[] = [
   { key: 'recommended', label: 'Top rated' },
@@ -57,7 +66,80 @@ export function Browse() {
     return sortRestaurants(filtered, sort)
   }, [query, cuisine, freeDeliveryOnly, sort])
 
+  /** The last search sent to Pendo, so the same query isn't tracked twice. */
+  const lastTrackedQuery = useRef<string | null>(null)
+
+  const trackSearch = useCallback(
+    (trigger: SearchTrigger) => {
+      const trimmed = query.trim()
+      if (!trimmed || trimmed === lastTrackedQuery.current) return
+      lastTrackedQuery.current = trimmed
+      if (typeof pendo !== 'undefined') {
+        pendo.track('restaurant_search_executed', {
+          query: trimmed.slice(0, 100),
+          queryLength: trimmed.length,
+          cuisineFilter: cuisine ?? 'all',
+          freeDeliveryOnly,
+          sortKey: sort,
+          resultsCount: results.length,
+          trigger,
+        })
+      }
+    },
+    [query, cuisine, freeDeliveryOnly, sort, results.length],
+  )
+
+  // There's no submit step, so a pause in typing is what runs a search.
+  useEffect(() => {
+    if (!query.trim()) {
+      // An emptied box starts over: searching the same thing again counts.
+      lastTrackedQuery.current = null
+      return
+    }
+    const id = window.setTimeout(() => trackSearch('typing'), SEARCH_PAUSE_MS)
+    return () => window.clearTimeout(id)
+  }, [query, trackSearch])
+
+  /** Set by a filter control, then tracked once `results` reflects it. */
+  const pendingFilterChange = useRef<FilterChange | null>(null)
+
+  useEffect(() => {
+    const filterChanged = pendingFilterChange.current
+    if (!filterChanged) return
+    pendingFilterChange.current = null
+    if (typeof pendo !== 'undefined') {
+      pendo.track('restaurant_filters_applied', {
+        filterChanged,
+        cuisineFilter: cuisine ?? 'all',
+        freeDeliveryOnly,
+        sortKey: sort,
+        query: query.trim().slice(0, 100),
+        resultsCount: results.length,
+      })
+    }
+  }, [cuisine, freeDeliveryOnly, sort, query, results.length])
+
+  const selectCuisine = (next: string | null) => {
+    // Re-clicking the active chip changes nothing, so there's nothing to track.
+    if (next === cuisine) return
+    pendingFilterChange.current = 'cuisine'
+    setCuisine(next)
+  }
+
+  const toggleFreeDelivery = () => {
+    pendingFilterChange.current = 'free_delivery'
+    setFreeDeliveryOnly((value) => !value)
+  }
+
+  const changeSort = (next: SortKey) => {
+    pendingFilterChange.current = 'sort'
+    setSort(next)
+  }
+
   const clearFilters = () => {
+    // Count a zero-result search the user gave up on before typing paused.
+    trackSearch('typing')
+    pendingFilterChange.current = 'clear_filters'
     setQuery('')
     setCuisine(null)
     setFreeDeliveryOnly(false)
@@ -76,23 +158,18 @@ export function Browse() {
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                trackSearch('enter')
+              }
+            }}
             placeholder="Search restaurants or dishes"
             aria-label="Search restaurants or dishes"
           />
           <button
             type="button"
             className="button"
-            onClick={() => {
-              if (typeof pendo !== 'undefined') {
-                pendo.track('restaurant_search_executed', {
-                  query: query.slice(0, 100),
-                  cuisineFilter: cuisine ?? 'all',
-                  freeDeliveryOnly,
-                  sortKey: sort,
-                  resultsCount: results.length,
-                })
-              }
-            }}
+            onClick={() => trackSearch('button')}
           >
             Search
           </button>
@@ -104,7 +181,7 @@ export function Browse() {
           <button
             type="button"
             className={`chip${cuisine === null ? ' is-active' : ''}`}
-            onClick={() => setCuisine(null)}
+            onClick={() => selectCuisine(null)}
           >
             All
           </button>
@@ -113,7 +190,7 @@ export function Browse() {
               key={name}
               type="button"
               className={`chip${cuisine === name ? ' is-active' : ''}`}
-              onClick={() => setCuisine(name)}
+              onClick={() => selectCuisine(name)}
             >
               {name}
             </button>
@@ -126,7 +203,7 @@ export function Browse() {
           type="button"
           className={`chip${freeDeliveryOnly ? ' is-active' : ''}`}
           aria-pressed={freeDeliveryOnly}
-          onClick={() => setFreeDeliveryOnly((value) => !value)}
+          onClick={toggleFreeDelivery}
         >
           Free delivery
         </button>
@@ -138,7 +215,7 @@ export function Browse() {
           id="sort"
           className="select"
           value={sort}
-          onChange={(event) => setSort(event.target.value as SortKey)}
+          onChange={(event) => changeSort(event.target.value as SortKey)}
         >
           {SORTS.map((option) => (
             <option key={option.key} value={option.key}>
@@ -167,7 +244,11 @@ export function Browse() {
           }
         />
       ) : (
-        <div className="restaurant-grid">
+        // Opening a result before typing pauses still counts as the search.
+        <div
+          className="restaurant-grid"
+          onClickCapture={() => trackSearch('typing')}
+        >
           {results.map((restaurant) => (
             <RestaurantCard key={restaurant.id} restaurant={restaurant} />
           ))}
