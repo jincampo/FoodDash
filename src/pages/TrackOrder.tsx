@@ -1,12 +1,13 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { EmptyState } from '../components/EmptyState'
 import { Tile } from '../components/Tile'
 import { getRestaurant } from '../data/restaurants'
 import { clockTime, fee, money } from '../lib/format'
-import { useOrder } from '../lib/store'
+import { useOrder, useOrders } from '../lib/store'
 import {
   STAGES,
+  TOTAL_DURATION,
   minutesRemaining,
   progressAt,
   stageIndexAt,
@@ -14,12 +15,49 @@ import {
 import { useNow } from '../lib/useNow'
 import { useReorder } from '../lib/useReorder'
 
-/** Prevents re-firing the delivered event on page revisit. */
+/** Delivered orders already sent to Pendo, kept across reloads and sessions. */
+const TRACKED_DELIVERIES_KEY = 'takeout.trackedDeliveries.v1'
+
+/** Fallback for when storage is blocked: repeats still stop until a reload. */
 const deliveredOrderIds = new Set<string>()
+
+function readTrackedDeliveries(): unknown[] {
+  try {
+    const stored: unknown = JSON.parse(
+      localStorage.getItem(TRACKED_DELIVERIES_KEY) ?? '[]',
+    )
+    return Array.isArray(stored) ? stored : []
+  } catch {
+    // Blocked or corrupt storage starts over rather than breaking the page.
+    return []
+  }
+}
+
+/**
+ * Records an order's delivery as tracked. Returns false if it already was, in
+ * this tab, another tab, or an earlier session, so it is only sent once.
+ */
+function markDeliveryTracked(orderId: string): boolean {
+  if (deliveredOrderIds.has(orderId)) return false
+  deliveredOrderIds.add(orderId)
+
+  const tracked = readTrackedDeliveries()
+  if (tracked.includes(orderId)) return false
+  try {
+    localStorage.setItem(
+      TRACKED_DELIVERIES_KEY,
+      JSON.stringify([...tracked, orderId]),
+    )
+  } catch {
+    // Private browsing or a full quota: the in-memory set still stops repeats.
+  }
+  return true
+}
 
 export function TrackOrder() {
   const { orderId } = useParams()
   const order = useOrder(orderId)
+  const ordersInHistoryCount = useOrders().length
   const reorder = useReorder()
 
   // Reading the clock here decides whether to keep ticking at all: a finished
@@ -35,8 +73,7 @@ export function TrackOrder() {
 
   useEffect(() => {
     if (!order || !isDeliveredNow) return
-    if (deliveredOrderIds.has(order.id)) return
-    deliveredOrderIds.add(order.id)
+    if (!markDeliveryTracked(order.id)) return
     if (typeof pendo !== 'undefined') {
       pendo.track('order_delivered', {
         orderId: order.id,
@@ -45,10 +82,27 @@ export function TrackOrder() {
         fulfillment: order.fulfillment,
         total: order.totals.total,
         etaMinutes: order.etaMinutes,
-        actualDurationMs: now - order.placedAt,
+        // Status is derived from placedAt, so the order arrived exactly this
+        // long after it was placed, even when this page is opened much later.
+        actualDurationMs: TOTAL_DURATION,
       })
     }
-  }, [isDeliveredNow, order, now])
+  }, [isDeliveredNow, order])
+
+  /** The missing order already reported, so each visit is tracked once. */
+  const reportedMissingOrderId = useRef<string | undefined>(undefined)
+
+  useEffect(() => {
+    if (order || !orderId || reportedMissingOrderId.current === orderId) return
+    reportedMissingOrderId.current = orderId
+    if (typeof pendo !== 'undefined') {
+      pendo.track('order_not_found', {
+        // Comes straight from the URL, so cap what a pasted link can send.
+        requestedOrderId: orderId.slice(0, 64),
+        ordersInHistoryCount,
+      })
+    }
+  }, [order, orderId, ordersInHistoryCount])
 
   if (!order) {
     return (
@@ -135,7 +189,11 @@ export function TrackOrder() {
 
         {delivered && (
           <div className="row">
-            <button type="button" className="button" onClick={() => reorder(order)}>
+            <button
+              type="button"
+              className="button"
+              onClick={() => reorder(order, 'track_order')}
+            >
               Order this again
             </button>
             <Link to="/" className="button button--secondary">
